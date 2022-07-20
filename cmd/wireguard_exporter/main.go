@@ -4,24 +4,23 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"strings"
 	"time"
 
-	wireguardexporter "github.com/mdlayher/wireguard_exporter"
+	wireguardexporter "github.com/cheina97/wireguard_exporter"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.zx2c4.com/wireguard/wgctrl"
 )
 
+const deviceName = "ns1-wg"
+
 func main() {
 	var (
 		metricsAddr = flag.String("metrics.addr", ":9586", "address for WireGuard exporter")
 		metricsPath = flag.String("metrics.path", "/metrics", "URL path for surfacing collected metrics")
-		wgPeerNames = flag.String("wireguard.peer-names", "", `optional: comma-separated list of colon-separated public keys and friendly peer names, such as: "keyA:foo,keyB:bar"`)
-		wgPeerFile  = flag.String("wireguard.peer-file", "", "optional: path to TOML friendly peer names mapping file; takes priority over -wireguard.peer-names")
 	)
 
 	flag.Parse()
@@ -32,49 +31,21 @@ func main() {
 	}
 	defer client.Close()
 
-	if _, err := client.Devices(); err != nil {
-		log.Fatalf("failed to fetch WireGuard devices: %v", err)
+	device, err := client.Device(deviceName)
+	if err != nil {
+		log.Fatalf("failed to find %s device: %v", deviceName, err)
 	}
 
 	// Configure the friendly peer names map if the flag is not empty.
+	count := 0
 	peerNames := make(map[string]string)
-	if *wgPeerNames != "" {
-		for _, kvs := range strings.Split(*wgPeerNames, ",") {
-			kv := strings.Split(kvs, ":")
-			if len(kv) != 2 {
-				log.Fatalf("failed to parse %q as a valid public key and peer name", kv)
-			}
-
-			peerNames[kv[0]] = kv[1]
-		}
-
-		log.Printf("loaded %d peer name mappings from command line", len(peerNames))
-	}
-
-	// In addition, load peer name mappings from a file if specified.
-	if file := *wgPeerFile; file != "" {
-		f, err := os.Open(file)
-		if err != nil {
-			log.Fatalf("failed to open peer names file: %v", err)
-		}
-		defer f.Close()
-
-		names, err := wireguardexporter.ParsePeers(f)
-		if err != nil {
-			log.Fatalf("failed to parse peer names file: %v", err)
-		}
-		_ = f.Close()
-
-		log.Printf("loaded %d peer name mappings from file %q", len(names), file)
-
-		// Merge file name mappings and overwrite CLI mappings if necessary.
-		for k, v := range names {
-			peerNames[k] = v
-		}
+	for _, peer := range device.Peers {
+		peerNames[peer.PublicKey.String()] = fmt.Sprintf("Cluster-%d", count)
+		count++
 	}
 
 	// Make Prometheus client aware of our collector.
-	c := wireguardexporter.New(client.Devices, peerNames)
+	c := wireguardexporter.New(client, peerNames)
 	prometheus.MustRegister(c)
 
 	// Set up HTTP handler for metrics.
